@@ -114,7 +114,7 @@ DWORD_PTR aobInjectionNopFromSignature(std::vector<int> signature, DWORD_PTR sta
 void HookPresent()
 {
     std::vector<int> sigPresent = { /* NEEEEEED signature pattern for IDXGISwapChain::Present */ };
-    DWORD_PTR presentAddress = aobInjectionNopFromSignature(sigPresent);
+    DWORD_PTR presentAddress = getAddressFromSignature(sigPresent);
 
     if (presentAddress) {
         // Hook the Present function
