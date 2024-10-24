@@ -1,12 +1,62 @@
+// dllmain.cpp : Defines the entry point for the DLL application.
 #include <Windows.h>
 #include <iostream>
 #include <vector>
+#include <d3d11.h>
 
 HMODULE myhModule;
 
 DWORD __stdcall ejectThread(LPVOID lpParameter) {
     Sleep(100);
     FreeLibraryAndExitThread(myhModule, 0);
+}
+// func prototype for hooking function inside steamoverlay
+HRESULT(__fastcall* hookingFunc)(uint64_t pToHook, uint64_t pDest, uint64_t pReturnFuncAddress, int a4) = nullptr;
+
+// steam present function prototype to return original function
+typedef HRESULT(__fastcall* tPresentFunc)(IDXGISwapChain*, UINT, UINT);
+tPresentFunc pPresentFuncOriginal = nullptr;
+
+HRESULT __fastcall PresentHook(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags)
+{
+    std::cout << "Present Hooked" << std::endl;
+}
+
+
+DWORD_PTR getAddressFromSignature(std::vector<int> signature, DWORD_PTR startaddress = 0, DWORD_PTR endaddress = 0) {
+
+    std::cout << "Scanning..." << std::endl;
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+
+    if (startaddress == 0) {
+        startaddress = reinterpret_cast<DWORD_PTR>(si.lpMinimumApplicationAddress);
+    }
+    if (endaddress == 0) {
+        endaddress = reinterpret_cast<DWORD_PTR>(si.lpMaximumApplicationAddress);
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{ 0 };
+    DWORD protectflags = (PAGE_GUARD | PAGE_NOCACHE | PAGE_NOACCESS);
+
+    for (DWORD_PTR i = startaddress; i < endaddress - signature.size(); i++) {
+        if (VirtualQuery((LPCVOID)i, &mbi, sizeof(mbi))) {
+            if (mbi.Protect & protectflags || !(mbi.State & MEM_COMMIT)) {
+                i += mbi.RegionSize;
+                continue; // if bad address then don't read from it
+            }
+            for (DWORD_PTR k = (DWORD_PTR)mbi.BaseAddress; k < (DWORD_PTR)mbi.BaseAddress + mbi.RegionSize - signature.size(); k++) {
+                for (size_t j = 0; j < signature.size(); j++) {
+                    if (signature.at(j) != -1 && signature.at(j) != *(BYTE*)(k + j))
+                        break;
+                    if (j + 1 == signature.size())
+                        return k;
+                }
+            }
+            i = (DWORD_PTR)mbi.BaseAddress + mbi.RegionSize;
+        }
+    }
+    return NULL;
 }
 
 DWORD_PTR aobInjectionNopFromSignature(std::vector<int> signature, DWORD_PTR startaddress = 0, DWORD_PTR endaddress = 0) {
@@ -61,12 +111,30 @@ DWORD_PTR aobInjectionNopFromSignature(std::vector<int> signature, DWORD_PTR sta
     return NULL; // Pattern not found
 }
 
+void HookPresent()
+{
+    std::vector<int> sigPresent = { /* NEEEEEED signature pattern for IDXGISwapChain::Present */ };
+    DWORD_PTR presentAddress = aobInjectionNopFromSignature(sigPresent);
+
+    if (presentAddress) {
+        // Hook the Present function
+        pPresentFuncOriginal = (tPresentFunc)presentAddress;
+        hookingFunc(presentAddress, (uint64_t)PresentHook, (uint64_t)pPresentFuncOriginal, 0);
+        std::cout << "Present function hooked successfully" << std::endl;
+    }
+    else {
+        std::cerr << "Failed to find the Present function signature" << std::endl;
+    }
+}
+
 DWORD WINAPI menu() {
     AllocConsole();
     FILE* fp;
     freopen_s(&fp, "CONOUT$", "w", stdout);
-    std::cout << "Press 0 to Exit | Press 1 for Infinity Ammo" << std::endl;
 
+    HookPresent();
+
+    std::cout << "Press 0 to Exit | Press 1 for Infinity Ammo" << std::endl;
     while (1) {
         Sleep(100);
         if (GetAsyncKeyState(VK_NUMPAD0))
@@ -76,10 +144,10 @@ DWORD WINAPI menu() {
             std::vector<int> sigAmmoSub = { 0x2B, 0x81, -1, -1, -1, -1, 0x33, 0xED }; // 2b 81 ? ? ? ? 33 ed
             DWORD_PTR Entry = aobInjectionNopFromSignature(sigAmmoSub);
 
-            if (Entry == NULL){
+            if (Entry == NULL) {
                 std::cout << "Couldnt find the pattern" << std::endl;
             }
-            
+
         }
     }
 
@@ -99,6 +167,8 @@ BOOL APIENTRY DllMain(HMODULE hModule,
     case DLL_PROCESS_ATTACH:
         myhModule = hModule;
         CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)menu, NULL, 0, NULL);
+
+        
         break;
     case DLL_THREAD_ATTACH:
     case DLL_THREAD_DETACH:
