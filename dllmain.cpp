@@ -10,18 +10,6 @@ DWORD __stdcall ejectThread(LPVOID lpParameter) {
     Sleep(100);
     FreeLibraryAndExitThread(myhModule, 0);
 }
-// func prototype for hooking function inside steamoverlay
-HRESULT(__fastcall* hookingFunc)(uint64_t pToHook, uint64_t pDest, uint64_t pReturnFuncAddress, int a4) = nullptr;
-
-// steam present function prototype to return original function
-typedef HRESULT(__fastcall* tPresentFunc)(IDXGISwapChain*, UINT, UINT);
-tPresentFunc pPresentFuncOriginal = nullptr;
-
-HRESULT __fastcall PresentHook(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags)
-{
-    std::cout << "Present Hooked" << std::endl;
-}
-
 
 DWORD_PTR getAddressFromSignature(std::vector<int> signature, DWORD_PTR startaddress = 0, DWORD_PTR endaddress = 0) {
 
@@ -111,19 +99,32 @@ DWORD_PTR aobInjectionNopFromSignature(std::vector<int> signature, DWORD_PTR sta
     return NULL; // Pattern not found
 }
 
+typedef HRESULT(__stdcall* PresentOriginal)(IDXGISwapChain* swap_chain, UINT SyncInterval, UINT Flags);
+PresentOriginal present_original = nullptr;
+
+HRESULT __stdcall present_hook(IDXGISwapChain* swap_chain, UINT SyncInterval, UINT Flags)
+{
+    return present_original(swap_chain, SyncInterval, Flags);
+}
+
 void HookPresent()
 {
-    std::vector<int> sigPresent = { /* NEEEEEED signature pattern for IDXGISwapChain::Present */ };
+    std::vector<int> sigPresent = { 0x48, 0x89, 0x5C, 0x24, -1, 0x48, 0x89, 0x6C, 0x24, -1, 0x48, 0x89, 0x74, 0x24, -1, 0x57, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, -1, 0x41, 0x8B, 0xE8 }; // 48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 41 56 41 57 48 83 EC ? 41 8B E8
     DWORD_PTR presentAddress = getAddressFromSignature(sigPresent);
+    std::vector<int> sigCreateHook = { 0x48, 0x89, 0x5C, 0x24, -1, 0x57, 0x48, 0x83, 0xEC, -1, 0x33, 0xC0, 0x48, 0x89, 0x44, 0x24 }; // 48 89 5C 24 ? 57 48 83 EC ? 33 C0 48 89 44 24
+    DWORD_PTR createhookAddress = getAddressFromSignature(sigCreateHook);
 
-    if (presentAddress) {
-        // Hook the Present function
-        pPresentFuncOriginal = (tPresentFunc)presentAddress;
-        hookingFunc(presentAddress, (uint64_t)PresentHook, (uint64_t)pPresentFuncOriginal, 0);
-        std::cout << "Present function hooked successfully" << std::endl;
+    __int64(__fastcall * CreateHook)(unsigned __int64 pFuncAddress, __int64 pDetourFuncAddress, unsigned __int64* pOriginalFuncAddressOut, int a4);
+
+    CreateHook = (decltype(CreateHook))createhookAddress;
+    CreateHook(presentAddress, (__int64)&present_hook, (unsigned __int64*)&present_original, 1);
+
+    if (present_original != nullptr)
+    {
+        std::cout << "Present function hooked successfully!" << std::endl;
     }
     else {
-        std::cerr << "Failed to find the Present function signature" << std::endl;
+        std::cout << "Failed to hook Present function." << std::endl;
     }
 }
 
@@ -168,7 +169,7 @@ BOOL APIENTRY DllMain(HMODULE hModule,
         myhModule = hModule;
         CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)menu, NULL, 0, NULL);
 
-        
+
         break;
     case DLL_THREAD_ATTACH:
     case DLL_THREAD_DETACH:
